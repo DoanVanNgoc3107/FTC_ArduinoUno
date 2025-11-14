@@ -21,15 +21,16 @@ Servo servo;
 #define BAUD 9600 // Baud rate of serial
 
 // TCS3200
-#define S0_PIN 2
+#define S0_PIN 6
 #define S1_PIN 3
 #define S2_PIN 4
 #define S3_PIN 5
-#define OUT_PIN 6
+#define OUT_PIN 2
 
-#define TIME_PLUSE_COUNT 500 // Thời gian đếm xung (ms)
-#define DELAY_READ_COLOR 100 // Thời gian chờ giữa các lần đọc màu (ms)
-#define THRESHOLD_COLOR 0.9  // Ngưỡng để phân biệt màu sắc (giá trị tùy chỉnh)
+#define TIME_PLUSE_COUNT 500      // Thời gian đếm xung (ms)
+#define DELAY_READ_COLOR 100      // Thời gian chờ giữa các lần đọc màu (ms)
+#define THRESHOLD_COLOR 0.9       // Ngưỡng để phân biệt màu sắc (giá trị tùy chỉnh)
+#define THRESHOLD_COLOR_LIMIT 150 // Ngưỡng giới hạn để xác định màu sắc (giá trị tùy chỉnh)
 
 int R_value, B_value, G_value;
 
@@ -228,7 +229,7 @@ int read_color_frequency(bool const S2_state, bool const S3_state)
 /**
  * @brief This function updates the RGB color values by reading from the TCS3200 sensor.
  */
-void update_tcs()
+void tcs_update()
 {
     unsigned long currentTime = millis();
 
@@ -244,6 +245,10 @@ void update_tcs()
     B_value = read_color_frequency(LOW, HIGH);
 }
 
+bool checkProduct() {
+
+}
+
 /**
  * @brief This function gets the current RGB color values read from the TCS3200 sensor.
  * @param R (int&) : reference to store Red value
@@ -252,21 +257,25 @@ void update_tcs()
  */
 char getColorString()
 {
-    int max_value = max(R_value, max(G_value, B_value));
+    int value = max(R_value, max(G_value, B_value));
 
-    float const THREDSHOLD = max_value * THRESHOLD_COLOR;
+    float const THREDSHOLD = value * THRESHOLD_COLOR;
 
-    if (max_value > THREDSHOLD && max_value == R_value)
+    if (value > THREDSHOLD && value == R_value)
     {
         return 'R';
     }
-    else if (max_value > THREDSHOLD && max_value == G_value)
+    else if (value > THREDSHOLD && value == G_value)
     {
         return 'G';
     }
-    else if (max_value > THREDSHOLD && max_value == B_value)
+    else if (value > THREDSHOLD && value == B_value)
     {
         return 'B';
+    }
+    else if (value < THRESHOLD_COLOR_LIMIT)
+    {
+        return 'N'; // No color detected
     }
     else
     {
@@ -285,12 +294,12 @@ void setup()
 void loop()
 {
     // Update TCS3200 readings
-    update_tcs();
+    tcs_update();
 
     // Get detected color
     char color = getColorString();
     Serial.println("Detected Color: " + String(color) + " | R: " + String(R_value) + " G: " + String(G_value) + " B: " + String(B_value));
-    
+
     // Ví dụ : khi đọc được màu đỏ thì servo sẽ tự gạt sản phầm sang tay trái góc 0 độ
     // khi đọc được màu xanh lá thì servo sẽ gạt sản phẩm sang tay phải góc 90 độ
     // khi đọc được màu xanh dương thì servo sẽ gạt sản phẩm sang tay phải góc 180 độ
