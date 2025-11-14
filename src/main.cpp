@@ -7,7 +7,6 @@
  * @copyright DOAN VAN NGOC (Don't use without permission)
  */
 
-
 #include <Arduino.h>
 #include <Servo.h>
 
@@ -19,7 +18,7 @@ Servo servo;
 #define SERVO_PIN 9 // Controller pin of servo
 
 // Define Serial
-#define BAUD 9600   // Baud rate of serial
+#define BAUD 9600 // Baud rate of serial
 
 // TCS3200
 #define S0_PIN 2
@@ -28,14 +27,34 @@ Servo servo;
 #define S3_PIN 5
 #define OUT_PIN 6
 
+#define TIME_PLUSE_COUNT 500 // Thời gian đếm xung (ms)
+#define DELAY_READ_COLOR 100 // Thời gian chờ giữa các lần đọc màu (ms)
+#define THRESHOLD_COLOR 0.9  // Ngưỡng để phân biệt màu sắc (giá trị tùy chỉnh)
+
 int R_value, B_value, G_value;
 
 // ==== GLOBAL VARIABLES ====
-volatile unsigned long pluseCount = 0; // GLOBAL - pluse count from TCS3200
+volatile unsigned long pluse = 0; // GLOBAL - pluse count from TCS3200
 
 unsigned long lastTime = 0; // GLOBAL - Last time
-int lastDegree = 0; // GLOBAL - vị trí hiện tại của servo
-int targetDegree = 0; // GLOBAL - vị trí mục tiêu
+int lastDegree = 0;         // GLOBAL - vị trí hiện tại của servo
+int targetDegree = 0;       // GLOBAL - vị trí mục tiêu
+
+// ==== Function Utilities ====
+/**
+ * @brief This function checks if a certain delay time has passed since the last recorded time.
+ * @param lastTime
+ * @param delayTime
+ * @return
+ */
+void checkTimeDelay(unsigned long &start, unsigned const long delayTime)
+{
+    if (millis() - start >= delayTime)
+    {
+        lastTime = millis();
+        return;
+    }
+}
 
 // ==== SERVO ====
 
@@ -82,6 +101,32 @@ void servo_active(int const degree)
 }
 
 /**
+ * @brief This function uses to set target degree of servo based on color
+ * @param color (char) : color string ("RED", "GREEN", "BLUE")
+ * @param degree_s1 (int) : degree for RED
+ * @param degree_s2 (int) : degree for GREEN
+ * @param degree_s3 (int) : degree for BLUE
+ */
+void servo_service(char const color, int const degree_s1, int const degree_s2, int const degree_s3)
+{
+    switch (color)
+    {
+    case 'R':
+        servo_active(degree_s1);
+        break;
+    case 'G':
+        servo_active(degree_s2);
+        break;
+    case 'B':
+        servo_active(degree_s3);
+        break;
+    default:
+        Serial.println("Color not recognized, servo not moved.");
+        break;
+    }
+}
+
+/**
  * @brief This function moves servo gradually to the target position
  * <br>
  * Call this in loop() to enable smooth movement
@@ -109,7 +154,6 @@ void servo_update()
 }
 
 // ==== SERIAL ====
-
 /**
  * @brief This function uses to set up a serial port
  * @param baud (int): baud of serial
@@ -127,49 +171,27 @@ void serial_setup(int const baud)
     Serial.println("Serial sets up complete with baud: " + String(baud));
 }
 
+// ==== TCS3200 ===
+
 /**
- * @brief Check for serial input and return degree value
- * @return int: degree value from serial input, -1 if no valid input
+ * @brief This is an interrupt service routine (ISR) to count pulses from TCS3200 sensor.
  */
-int check()
-{
-    if (Serial.available())
-    {
-        // Đọc toàn bộ input để tránh buffer còn dư
-        while ((Serial.available() && Serial.peek() == '\n') || Serial.peek() == '\r')
-        {
-            Serial.read();
-        }
-
-        if (Serial.available())
-        {
-            const int input = Serial.parseInt();
-
-            // Xóa buffer còn lại
-            while (Serial.available())
-            {
-                Serial.read();
-            }
-            return input;
-        }
-    }
-    return -1;
-}
-
-// ==== TCS3200 ====
-
 void countPluse()
 {
-    pluseCount++;
+    pluse++;
 }
 
 /**
  * @brief This function initializes the TCS3200 sensor pins and sets the frequency scale.
  * @param S0_pin (int), S1_pin (int), S2_pin (int), S3_pin (int), OUT_pin (int) : TCS3200 pins
+ * @param S1_pin (int) : pin S1 of TCS3200
+ * @param S2_pin (int) : pin S2 of TCS3200
+ * @param S3_pin (int) : pin S3 of TCS3200
+ * @param OUT_pin (int) : pin OUT of TCS3200
  */
 void tcs_setup(int const S0_pin, int const S1_pin, int const S2_pin, int const S3_pin, int const OUT_pin)
 {
-    // 1. Khai báo chế độ chân: S0-S3 là OUTPUT, OUT là INPUT
+    // Configure pin modes
     pinMode(S0_pin, OUTPUT);
     pinMode(S1_pin, OUTPUT);
     pinMode(S2_pin, OUTPUT);
@@ -184,37 +206,82 @@ void tcs_setup(int const S0_pin, int const S1_pin, int const S2_pin, int const S
     Serial.println("TCS3200 setup complete with 20% scaling.");
 }
 
-
-void readColor()
+/**
+ * @brief This function reads color frequency from TCS3200 sensor based on S2 and S3 states.
+ * @param S2_state (bool) : state for S2 pin
+ * @param S3_state (bool) : state for S3 pin
+ * @return unsigned long : pulse count corresponding to the color frequency
+ */
+int read_color_frequency(bool const S2_state, bool const S3_state)
 {
+    digitalWrite(S2_PIN, S2_state);
+    digitalWrite(S3_PIN, S3_state);
+
+    pluse = 0; // Reset biến đếm
+    attachInterrupt(digitalPinToInterrupt(OUT_PIN), countPluse, RISING);
+    delay(TIME_PLUSE_COUNT); // Đợi 500ms để đếm
+    detachInterrupt(digitalPinToInterrupt(OUT_PIN));
+
+    return static_cast<int>(pluse);
+}
+
+/**
+ * @brief This function updates the RGB color values by reading from the TCS3200 sensor.
+ */
+void updateTCS()
+{
+    unsigned long currentTime = millis();
+
+    // RED : S2 = LOW, S3 = LOW
+    R_value = read_color_frequency(LOW, LOW);
+    checkTimeDelay(currentTime, DELAY_READ_COLOR);
+
+    // GREEN : S2 = HIGH, S3 = HIGH
+    G_value = read_color_frequency(HIGH, HIGH);
+    checkTimeDelay(currentTime, DELAY_READ_COLOR);
+
+    // BLUE : S2 = LOW, S3 = HIGH
+    B_value = read_color_frequency(LOW, HIGH);
+}
+
+/**
+ * @brief This function gets the current RGB color values read from the TCS3200 sensor.
+ * @param R (int&) : reference to store Red value
+ * @param G (int&) : reference to store Green value
+ * @param B (int&) : reference to store Blue value
+ */
+char getColorString()
+{
+    int max_value = max(R_value, max(G_value, B_value));
+
+    float const THREDSHOLD = max_value * THRESHOLD_COLOR;
+
+    if (max_value > THREDSHOLD && max_value == R_value)
+    {
+        return 'R';
+    }
+    else if (max_value > THREDSHOLD && max_value == G_value)
+    {
+        return 'G';
+    }
+    else if (max_value > THREDSHOLD && max_value == B_value)
+    {
+        return 'B';
+    }
+    else
+    {
+        return 'U';
+    }
 }
 
 void setup()
 {
+    // Set up Serial, Servo, TCS3200
     serial_setup(BAUD);
     servo_setup(SERVO_PIN);
+    tcs_setup(S0_PIN, S1_PIN, S2_PIN, S3_PIN, OUT_PIN);
 }
 
 void loop()
 {
-    const int deg = check();
-
-    // Chỉ cập nhật target khi có input hợp lệ
-    if (deg >= 0)
-    {
-        servo_active(deg);
-    }
-
-    // Cập nhật vị trí servo từng bước
-    servo_update();
-
-    // In thông tin vị trí hiện tại (tùy chọn)
-    static unsigned long lastPrintTime = 0;
-    if (millis() - lastPrintTime > 5000)
-    {
-        // In mỗi 5 giây
-        lastPrintTime = millis();
-        Serial.println("Status - Current: " + String(getDegCurrent()) +
-            "°, Target: " + String(targetDegree) + "°");
-    }
 }
