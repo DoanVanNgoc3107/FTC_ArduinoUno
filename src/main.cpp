@@ -1,10 +1,10 @@
 /**
  * @author Doan Van Ngoc - 104317 - DTD64CL
- * @brief PHAN LOAI SAN PHAM DUA TREN MAU SAC - SERVO CONTROL
+ * @brief Color Detection and Servo Control
  * @teacher Ths. Vu Thi Thu
  * @version 1.0
  * @date 2025-11-14
- * @copyright DOAN VAN NGOC (Don't use without permission)
+ * @copyright DOAN VAN NGOC (Don't use without permission, thank you!)
  */
 
 #include <Arduino.h>
@@ -228,7 +228,7 @@ int read_color_frequency(bool const S2_state, bool const S3_state)
 /**
  * @brief This function updates the RGB color values by reading from the TCS3200 sensor.
  */
-void updateTCS()
+void update_tcs()
 {
     unsigned long currentTime = millis();
 
@@ -284,4 +284,16 @@ void setup()
 
 void loop()
 {
+    // Update TCS3200 readings
+    update_tcs();
+
+    // Get detected color
+    char color = getColorString();
+    Serial.println("Detected Color: " + String(color) + " | R: " + String(R_value) + " G: " + String(G_value) + " B: " + String(B_value));
+    
+    // Ví dụ : khi đọc được màu đỏ thì servo sẽ tự gạt sản phầm sang tay trái góc 0 độ
+    // khi đọc được màu xanh lá thì servo sẽ gạt sản phẩm sang tay phải góc 90 độ
+    // khi đọc được màu xanh dương thì servo sẽ gạt sản phẩm sang tay phải góc 180 độ
+    servo_service(color, 0, 90, 180);
+    servo_update();
 }
