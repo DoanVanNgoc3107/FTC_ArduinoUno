@@ -11,7 +11,9 @@
 #include <Servo.h>
 
 // Khởi tạo đối tương Servo
-Servo servo;
+Servo servo_checked; // Servo này sẽ chịu nhiệm vụ đưa sản phẩm vào vị trí
+Servo servo_keeper; // Servo giữ sản phẩm đợi servo_move gạt thang sang vị trí đã định
+Servo servo_move; // Servo gạt thang sang vị trí thùng chứa sản phầm theo màu sắc đã định
 
 // ==== CONSTANTS ====
 // Define Servo
@@ -31,6 +33,9 @@ Servo servo;
 #define DELAY_READ_COLOR 100      // Thời gian chờ giữa các lần đọc màu (ms)
 #define THRESHOLD_COLOR 0.9       // Ngưỡng để phân biệt màu sắc (giá trị tùy chỉnh)
 #define THRESHOLD_COLOR_LIMIT 150 // Ngưỡng giới hạn để xác định màu sắc (giá trị tùy chỉnh)
+#define SERVO_STEP 3         // degrees per update when stepping
+#define SERVO_STEP_DELAY 5   // ms between step updates (was 20)
+
 
 int R_value, B_value, G_value;
 
@@ -38,23 +43,27 @@ int R_value, B_value, G_value;
 volatile unsigned long pluse = 0; // GLOBAL - pluse count from TCS3200
 
 unsigned long lastTime = 0; // GLOBAL - Last time
-int lastDegree = 0;         // GLOBAL - vị trí hiện tại của servo
-int targetDegree = 0;       // GLOBAL - vị trí mục tiêu
+int lastDegree = 0; // GLOBAL - vị trí hiện tại của servo
+int targetDegree = 0; // GLOBAL - vị trí mục tiêu
 
 // ==== Function Utilities ====
 /**
- * @brief This function checks if a certain delay time has passed since the last recorded time.
- * @param lastTime
+ * @brief This function checks if a specified delay time has elapsed since the last recorded time.
+ * If the delay time has elapsed, it updates the start time to the current time and returns true.
+ * Otherwise, it returns false.
+ * @param start
  * @param delayTime
- * @return
+ * @return bool
  */
-void checkTimeDelay(unsigned long &start, unsigned const long delayTime)
+bool checkTimeElapsed(unsigned long& start, unsigned long delayTime)
 {
-    if (millis() - start >= delayTime)
+    unsigned long now = millis();
+    if (now - start >= delayTime)
     {
-        lastTime = millis();
-        return;
+        start = now;
+        return true;
     }
+    return false;
 }
 
 // ==== SERVO ====
@@ -69,12 +78,11 @@ void servo_setup(int const servo_pin)
     lastDegree = servo.read();
     targetDegree = lastDegree;
     Serial.println("Servo setup complete on pin :" + String(servo_pin));
-    Serial.println("Enter angle (0-180) to control servo:");
 }
 
 /**
- * @brief This function uses to get current degree of the servo
- * @return degree (int) : degree of the servo
+ * @brief Hàm này dùng để lấy vị trí hiện tại của servo
+ * @return lastDegree (int) : vị trí hiện tại của servo
  */
 int getDegCurrent()
 {
@@ -82,10 +90,11 @@ int getDegCurrent()
 }
 
 /**
- * @brief This function uses to set target degree of servo
- * @param degree (int) : target degree (0-180)
+ * @brief Hàm này dùng để di chuyển servo đến vị trí mong muốn
+  * @param degree (int) : vị trí mong muốn (0-180)
+ * @param immediate (bool) : nếu true thì di chuyển ngay lập tức, nếu false thì di chuyển từ từ
  */
-void servo_active(int const degree)
+void servo_active(int const degree, bool const immediate = false)
 {
     if (degree < 0 || degree > 180)
     {
@@ -93,34 +102,51 @@ void servo_active(int const degree)
         return;
     }
 
-    // Only update if targetDegree is different
+    // Nếu vị trí mục tiêu khác với vị trí hiện tại thì cập nhật
     if (targetDegree != degree)
     {
         targetDegree = degree;
         Serial.println("New target set: " + String(degree) + " degrees");
+
+        // Nếu di chuyển ngay lập tức thì cập nhật vị trí hiện tại luôn
+        if (immediate)
+        {
+            lastDegree = degree;
+            servo.write(degree);
+            Serial.println("Servo moved immediate to: " + String(degree));
+            lastTime = millis(); // reset timing
+        }
     }
 }
 
 /**
- * @brief This function uses to set target degree of servo based on color
- * @param color (char) : color string ("RED", "GREEN", "BLUE")
- * @param degree_s1 (int) : degree for RED
- * @param degree_s2 (int) : degree for GREEN
- * @param degree_s3 (int) : degree for BLUE
+ * @brief This function moves servo based on color input
+  'R' -> degree_s1
+  'G' -> degree_s2
+  'B' -> degree_s3
+ * @param color - 'R', 'G', 'B', 'U' (unknown)
+ * @param degree_s1 - degree for 'R'
+ * @param degree_s2 - degree for 'G'
+ * @param degree_s3 - degree for 'B'
+ * @param degree_none - degree for 'U'
+ * @param immediate - if true, move immediately; if false, move gradually
  */
-void servo_service(char const color, int const degree_s1, int const degree_s2, int const degree_s3)
+void servo_service(char const color, int const degree_s1, int const degree_s2, int const degree_s3,
+                   int const degree_none, bool const immediate = false)
 {
     switch (color)
     {
     case 'R':
-        servo_active(degree_s1);
+        servo_active(degree_s1, immediate);
         break;
     case 'G':
-        servo_active(degree_s2);
+        servo_active(degree_s2, immediate);
         break;
     case 'B':
-        servo_active(degree_s3);
+        servo_active(degree_s3, immediate);
         break;
+    case 'U':
+        servo_active(degree_none);
     default:
         Serial.println("Color not recognized, servo not moved.");
         break;
@@ -136,17 +162,17 @@ void servo_update()
 {
     const unsigned long currentTime = millis();
 
-    if (lastDegree != targetDegree && currentTime - lastTime > 20)
+    if (lastDegree != targetDegree && currentTime - lastTime > SERVO_STEP_DELAY)
     {
         lastTime = currentTime;
 
         if (lastDegree < targetDegree)
         {
-            lastDegree++;
+            lastDegree = min(lastDegree + SERVO_STEP, targetDegree);
         }
         else
         {
-            lastDegree--;
+            lastDegree = max(lastDegree - SERVO_STEP, targetDegree);
         }
 
         servo.write(lastDegree);
@@ -231,56 +257,69 @@ int read_color_frequency(bool const S2_state, bool const S3_state)
  */
 void tcs_update()
 {
-    unsigned long currentTime = millis();
-
     // RED : S2 = LOW, S3 = LOW
     R_value = read_color_frequency(LOW, LOW);
-    checkTimeDelay(currentTime, DELAY_READ_COLOR);
+    delay(DELAY_READ_COLOR);
 
     // GREEN : S2 = HIGH, S3 = HIGH
     G_value = read_color_frequency(HIGH, HIGH);
-    checkTimeDelay(currentTime, DELAY_READ_COLOR);
+    delay(DELAY_READ_COLOR);
 
     // BLUE : S2 = LOW, S3 = HIGH
     B_value = read_color_frequency(LOW, HIGH);
 }
 
-bool checkProduct() {
-
+bool checkProduct()
+{
+    return true;
 }
 
 /**
- * @brief This function gets the current RGB color values read from the TCS3200 sensor.
- * @param R (int&) : reference to store Red value
- * @param G (int&) : reference to store Green value
- * @param B (int&) : reference to store Blue value
+ * @brief Hàm này dùng để xác định màu sắc dựa trên giá trị RGB đọc được từ cảm biến TCS3200
+  'R' -> Red
+  'G' -> Green
+  'B' -> Blue
+  'N' -> No color (all values below threshold)
+  'U' -> Unknown / ambiguous
+ * @note THRESHOLD_COLOR_LIMIT và THRESHOLD_COLOR có thể được điều chỉnh để phù hợp với điều kiện môi trường cụ thể
+ * @return @note char : ký tự đại diện cho màu sắc
  */
 char getColorString()
 {
-    int value = max(R_value, max(G_value, B_value));
-
-    float const THREDSHOLD = value * THRESHOLD_COLOR;
-
-    if (value > THREDSHOLD && value == R_value)
+    // If overall signal too low => No color
+    if (R_value < THRESHOLD_COLOR_LIMIT && G_value < THRESHOLD_COLOR_LIMIT && B_value < THRESHOLD_COLOR_LIMIT)
     {
-        return 'R';
+        return 'N';
     }
-    else if (value > THREDSHOLD && value == G_value)
+
+    int maxVal = max(R_value, max(G_value, B_value));
+    int secondVal = 0;
+
+    // compute second largest
+    if (maxVal == R_value) secondVal = max(G_value, B_value);
+    else if (maxVal == G_value) secondVal = max(R_value, B_value);
+    else secondVal = max(R_value, G_value);
+
+    // Avoid division by zero
+    if (secondVal == 0)
     {
-        return 'G';
-    }
-    else if (value > THREDSHOLD && value == B_value)
-    {
+        if (maxVal == R_value) return 'R';
+        if (maxVal == G_value) return 'G';
         return 'B';
     }
-    else if (value < THRESHOLD_COLOR_LIMIT)
+
+    // Interpret THRESHOLD_COLOR (0 < THRESHOLD_COLOR < 1) as how strict dominance must be.
+    // Require: maxVal >= secondVal / THRESHOLD_COLOR  (e.g. THRESHOLD_COLOR=0.9 => need ~1.11x)
+    float required = static_cast<float>(secondVal) / max(0.0001f, static_cast<float>(THRESHOLD_COLOR));
+
+    if (maxVal >= required)
     {
-        return 'N'; // No color detected
+        if (maxVal == R_value) return 'R';
+        if (maxVal == G_value) return 'G';
+        return 'B';
     }
-    else
-    {
-        return 'U';
-    }
+
+    return 'U'; // Unknown / ambiguous
 }
 
 void setup()
@@ -298,11 +337,13 @@ void loop()
 
     // Get detected color
     char color = getColorString();
-    Serial.println("Detected Color: " + String(color) + " | R: " + String(R_value) + " G: " + String(G_value) + " B: " + String(B_value));
+    Serial.println(
+        "Detected Color: " + String(color) + " | R: " + String(R_value) + " G: " + String(G_value) + " B: " +
+        String(B_value));
 
     // Ví dụ : khi đọc được màu đỏ thì servo sẽ tự gạt sản phầm sang tay trái góc 0 độ
     // khi đọc được màu xanh lá thì servo sẽ gạt sản phẩm sang tay phải góc 90 độ
     // khi đọc được màu xanh dương thì servo sẽ gạt sản phẩm sang tay phải góc 180 độ
-    servo_service(color, 0, 90, 180);
+    servo_service(color, 40, 90, 180, 0, true);
     servo_update();
 }
